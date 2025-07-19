@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Car Bidding Test</title>
+  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+  <div class="max-w-2xl mx-auto mt-10 p-6 bg-white rounded shadow">
+    <h1 class="text-2xl font-bold mb-4">Car Bidding WebSocket Tester</h1>
+
+    <div class="space-y-4">
+      <div>
+        <label>Select Username:</label>
+        <select id="username" class="w-full p-2 border rounded"></select>
+      </div>
+
+      <div>
+        <label>Select Auction:</label>
+        <select id="auctionId" class="w-full p-2 border rounded"></select>
+      </div>
+
+      <div>
+        <strong>Starting Bid:</strong>
+        <span id="startingBidDisplay" class="text-blue-700 font-semibold">N/A</span>
+      </div>
+
+      <div>
+        <strong>Current Highest Bid:</strong>
+        <span id="highestBidDisplay" class="text-green-700 font-semibold">N/A</span>
+      </div>
+
+      <button id="connectBtn" class="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700">Connect & Join Auction</button>
+
+      <div id="bidSection" class="hidden mt-4">
+        <label>Bid Amount:</label>
+        <input id="bidAmount" type="number" class="w-full p-2 border rounded mb-2" placeholder="Enter bid amount" />
+        <button id="placeBidBtn" class="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700">Place Bid</button>
+      </div>
+
+      <div class="mt-6">
+        <h2 class="text-xl font-semibold mb-2">Messages:</h2>
+        <ul id="messages" class="bg-gray-50 p-3 rounded h-64 overflow-y-auto text-sm"></ul>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socketHost = 'http://localhost:3000';
+    let socket;
+    let auctionMap = {};
+    let userMap = {};
+
+    function logMessage(message) {
+      const msgList = document.getElementById('messages');
+      const li = document.createElement('li');
+      li.textContent = message;
+      msgList.appendChild(li);
+      msgList.scrollTop = msgList.scrollHeight;
+    }
+
+    function updateAuctionDisplay(auctionId) {
+      const auction = auctionMap[auctionId];
+      const startingBidDisplay = document.getElementById('startingBidDisplay');
+      const highestBidDisplay = document.getElementById('highestBidDisplay');
+
+      startingBidDisplay.textContent = auction?.startingBid ? `₹${auction.startingBid}` : 'N/A';
+
+      if (auction?.highestBidDetails?.bidPrice) {
+        const bidder = userMap[auction.highestBidDetails.userId];
+        highestBidDisplay.textContent = `₹${auction.highestBidDetails.bidPrice} by ${bidder ?? auction.highestBidDetails.userId}`;
+      } else {
+        highestBidDisplay.textContent = 'N/A';
+      }
+    }
+
+    async function fetchAuctions(selectedId = null) {
+      try {
+        const res = await fetch(`${socketHost}/auction`);
+        const data = await res.json();
+        const auctionSelect = document.getElementById('auctionId');
+        auctionSelect.innerHTML = '';
+        auctionMap = {};
+
+        data.forEach(auction => {
+          const option = document.createElement('option');
+          option.value = auction._id;
+          option.textContent = auction.carName;
+          auctionSelect.appendChild(option);
+          auctionMap[auction._id] = auction;
+        });
+
+        const defaultId = selectedId ?? auctionSelect.value;
+        auctionSelect.value = defaultId;
+        updateAuctionDisplay(defaultId);
+
+        auctionSelect.addEventListener('change', e => updateAuctionDisplay(e.target.value));
+      } catch (err) {
+        logMessage('❌ Error fetching auctions');
+      }
+    }
+
+    async function fetchUsers() {
+      try {
+        const res = await fetch(`${socketHost}/user`);
+        const users = await res.json();
+        const usernameSelect = document.getElementById('username');
+        usernameSelect.innerHTML = '';
+        userMap = {};
+
+        users.forEach(user => {
+          const option = document.createElement('option');
+          option.value = user._id;
+          option.textContent = user.username;
+          usernameSelect.appendChild(option);
+          userMap[user._id] = user.username;
+        });
+      } catch (err) {
+        logMessage('❌ Error fetching users');
+      }
+    }
+
+    document.getElementById('connectBtn').addEventListener('click', () => {
+      const userId = document.getElementById('username').value;
+      const auctionId = document.getElementById('auctionId').value;
+
+      if (!userId || !auctionId) {
+        return alert('Please select username and auction');
+      }
+
+      socket = io(socketHost, {
+        query: { userId, auctionId },
+        transports: ["websocket"],
+      });
+
+      const EVENTS = {
+        BID_ACCEPTED: 'bid_accepted',
+        BID_REJECTED: 'bid_rejected',
+        BID_QUEUED: 'bid_queued',
+        USER_LEFT: 'user_left',
+        USER_JOINED: 'user_joined',
+        AUCTION_END: 'auction_end',
+      };
+
+      socket.on('connect', () => {
+        logMessage('✅ Connected to server');
+        socket.emit(EVENTS.USER_JOINED, { userId, auctionId });
+        document.getElementById('bidSection').classList.remove('hidden');
+      });
+
+      Object.values(EVENTS).forEach(event => {
+        socket.on(event, async data => {
+          logMessage(`📨 ${event}: ${JSON.stringify(data)}`);
+
+          if (event === EVENTS.BID_ACCEPTED && data.auctionId) {
+            const selectedAuctionId = document.getElementById('auctionId').value;
+            if (data.auctionId === selectedAuctionId) {
+              const username = userMap[data.userId] || data.userId;
+              document.getElementById('highestBidDisplay').textContent = `₹${data.bidPrice} by ${username}`;
+            }
+          }
+
+        });
+      });
+
+      socket.on('newBid', data => {
+        const bidder = userMap[data.userId] || data.userId;
+        logMessage(`📈 New Highest Bid: ₹${data.bidPrice} by ${bidder}`);
+
+        const selectedAuctionId = document.getElementById('auctionId').value;
+        if (data.auctionId === selectedAuctionId) {
+          document.getElementById('highestBidDisplay').textContent = `₹${data.bidPrice} by ${bidder}`;
+        }
+      });
+
+      socket.on('disconnect', () => logMessage('❌ Disconnected from server'));
+    });
+
+    document.getElementById('placeBidBtn').addEventListener('click', () => {
+      const auctionId = document.getElementById('auctionId').value;
+      const userId = document.getElementById('username').value;
+      const bidAmount = parseFloat(document.getElementById('bidAmount').value);
+
+      if (!bidAmount || isNaN(bidAmount)) {
+        return alert('Please enter a valid bid amount');
+      }
+
+      socket.emit('placeBid', { auctionId, userId, bidAmount });
+      logMessage(`📤 Placed bid: ₹${bidAmount}`);
+    });
+
+    fetchUsers();
+    fetchAuctions();
+  </script>
+</body>
+</html>
